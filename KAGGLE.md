@@ -1,7 +1,9 @@
 # Lyra на Kaggle
 
-Короткий чек-лист для GPU-сессии. Полный прогон начинайте только после локального
-smoke-теста и проверки доступной VRAM.
+Порядок запуска: проверьте GPU, выполните офлайн smoke-тест, проверьте загрузку
+данных коротким прогоном и только затем увеличивайте объём. Полный прогон зависит
+от доступности Kaggle GPU, интернета и выбранного HF-датасета; локальная проверка
+не может подтвердить эти внешние условия.
 
 ## 1. Проверка окружения
 
@@ -12,23 +14,67 @@ print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
 print(torch.cuda.get_device_properties(0).total_memory / 1024**3, "GiB")
 ```
 
+В Kaggle включите GPU в настройках Notebook и, если используете HF streaming,
+включите Internet. Сначала проверьте среду:
+
+```python
+import torch
+assert torch.cuda.is_available(), "В настройках Notebook выберите GPU"
+print(torch.__version__, torch.cuda.get_device_name(0))
+print(torch.cuda.get_device_properties(0).total_memory / 1024**3, "GiB")
+```
+
+Установите зависимости в отдельной ячейке и проверьте проект. В Kaggle обычно
+уже установлен CUDA-сбор PyTorch; команда оставит его, если версия удовлетворяет
+requirements.txt:
+
 ```bash
 pip install -r requirements.txt
 python train.py --smoke-test --output-dir /kaggle/working/smoke
 ```
 
-Smoke-тест офлайн и не требует данных; он проверяет optimizer, eval и checkpoint.
+Продолжайте, только если в выводе есть `SMOKE TEST PASS`. Smoke-тест офлайн и не
+проверяет сеть, скачивание датасета или фактическое обучение на GPU.
 
-## 2. Первый короткий pretraining
+## 2. Проверка данных коротким pretraining
 
-Для T4/P100 (16 GB) начните с одного микро-батча и accumulation:
+Сначала проверьте доступ к датасету и пройдите несколько шагов. Ограничение
+`--max-docs` также ограничивает число документов, предварительно собираемых для
+детерминированного train/validation split:
 
 ```bash
 python train.py \
   --hf-dataset HuggingFaceFW/fineweb-2 \
   --hf-config rus_Cyrl \
   --hf-text-field text \
-  --max-docs 100000 \
+  --max-docs 2000 \
+  --max-tokens 500000 \
+  --output-dir /kaggle/working/lyra-check \
+  --batch-size 1 \
+  --grad-accum-steps 4 \
+  --max-steps 10 \
+  --warmup-steps 2 \
+  --gradient-checkpointing \
+  --eval-interval 5 \
+  --save-interval 5 \
+  --log-interval 1
+```
+
+Проверьте конечные train/eval loss и наличие `/kaggle/working/lyra-check/final.pt`.
+Если загрузка датасета завершилась ошибкой, проверьте Kaggle Internet, имя/config
+датасета и доступность нужной ревизии.
+
+## 3. Увеличение pretraining
+
+После успешной проверки данных для T4/P100 (16 GB) увеличивайте объём постепенно.
+Начните с одного микро-батча и accumulation:
+
+```bash
+python train.py \
+  --hf-dataset HuggingFaceFW/fineweb-2 \
+  --hf-config rus_Cyrl \
+  --hf-text-field text \
+  --max-docs 20000 \
   --max-tokens 20000000 \
   --output-dir /kaggle/working/lyra \
   --batch-size 1 \
@@ -49,7 +95,7 @@ python train.py \
 Если streaming-датасет недоступен, загрузите `.txt`/`.jsonl` в Kaggle Dataset и
 передайте `--data /kaggle/input/...`.
 
-## 3. SFT
+## 4. SFT
 
 ```bash
 python train.py \
@@ -62,7 +108,7 @@ python train.py \
   --gradient-checkpointing
 ```
 
-## 4. Checkpoint и resume
+## 5. Checkpoint и resume
 
 В `/kaggle/working/lyra` сохраняются:
 
@@ -90,7 +136,7 @@ Data/manifest/model config восстанавливаются из checkpoint, �
 тогда явно передайте `--data` или `--train-tokens` (и при необходимости
 `--val-tokens`).
 
-## 5. Что контролировать
+## 6. Что контролировать
 
 - `metrics.jsonl`: loss должен быть конечным; резкие скачки или `NaN` — повод
   остановиться и проверить данные/learning rate.
